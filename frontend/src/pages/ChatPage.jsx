@@ -1,24 +1,18 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
-  ArrowRight,
   Check,
   CheckCheck,
-  CirclePlay,
   Copy,
   ExternalLink,
   Flame,
-  Info,
-  MoreHorizontal,
   Send,
-  Sparkles,
   ThumbsDown,
   ThumbsUp,
-  Youtube,
-  Zap,
-  Plus,
 } from "lucide-react";
+
 import { askVideoQuestion } from "../services/api.js";
+
 import {
   extractYouTubeId,
   getActiveVideo,
@@ -26,185 +20,363 @@ import {
 } from "../services/videoStore.js";
 
 const suggestions = [
-  "Drop the 30-second TL;DR of this video without any filler ⚡",
-  "Who is Avantika and what was her genuine reaction to the Porsche? 👀",
-  "Which exact Porsche model arrived, what color, and was it brand new? 🏎️",
-  "Point out timestamps where anyone was doubting or joking about the purchase 💀",
+  "Give me a short summary of this video.",
+  "What are the most important things discussed in this video?",
+  "Explain the main events in chronological order.",
+  "What useful information can I learn from this video?",
 ];
 
+function getTimestamp() {
+  return new Date().toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function getYouTubeThumbnail(videoId) {
+  return `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`;
+}
+
+function getYouTubeUrl(video) {
+  return (
+    video.url ||
+    `https://www.youtube.com/watch?v=${video.id}`
+  );
+}
+
+function createMessage(role, content) {
+  return {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+    role,
+    content,
+    timestamp: getTimestamp(),
+  };
+}
+
 export default function ChatPage() {
-  const [activeVideo, setActive] = useState(getActiveVideo());
-  const [messages, setMessages] = useState([]);
+  const [activeVideo, setActive] = useState(() => getActiveVideo());
+
+  // Each video's conversation is stored separately.
+  const [messagesByVideo, setMessagesByVideo] = useState({});
+
   const [query, setQuery] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const [copiedIndex, setCopiedIndex] = useState(null);
+
+  // Track requests by video ID so switching videos does not mix their state.
+  const [loadingVideoIds, setLoadingVideoIds] = useState([]);
+
+  // Keep errors separate for each video.
+  const [errorsByVideo, setErrorsByVideo] = useState({});
+
+  // Use message IDs instead of array indexes for reactions and copying.
+  const [copiedMessageId, setCopiedMessageId] = useState(null);
   const [reactions, setReactions] = useState({});
+
   const [quickUrl, setQuickUrl] = useState("");
+  const [quickSwitchError, setQuickSwitchError] = useState("");
+
   const scrollRef = useRef(null);
 
+  const videoId = activeVideo.id;
+  const messages = messagesByVideo[videoId] || [];
+  const loading = loadingVideoIds.includes(videoId);
+  const error = errorsByVideo[videoId] || "";
+
+  // Listen for video changes from Dashboard, My Videos, or other components.
   useEffect(() => {
     function handleVideoChange() {
-      setActive(getActiveVideo());
+      const updatedVideo = getActiveVideo();
+
+      if (updatedVideo?.id) {
+        setActive(updatedVideo);
+        setQuery("");
+        setQuickSwitchError("");
+      }
     }
-    window.addEventListener("active_video_changed", handleVideoChange);
-    return () =>
-      window.removeEventListener("active_video_changed", handleVideoChange);
+
+    window.addEventListener(
+      "active_video_changed",
+      handleVideoChange
+    );
+
+    return () => {
+      window.removeEventListener(
+        "active_video_changed",
+        handleVideoChange
+      );
+    };
   }, []);
 
+  // Scroll to the latest message whenever the current conversation changes.
   useEffect(() => {
     scrollRef.current?.scrollTo({
       top: scrollRef.current.scrollHeight,
       behavior: "smooth",
     });
-  }, [messages, loading]);
+  }, [messages, loading, error]);
 
-  async function sendQuestion(text = query) {
-    const clean = text.trim();
-    if (!clean || loading) return;
-
-    setError("");
-    setQuery("");
-    setMessages((prev) => [
-      ...prev,
-      {
-        role: "user",
-        content: clean,
-        timestamp: new Date().toLocaleTimeString([], {
-          hour: "2-digit",
-          minute: "2-digit",
-        }),
-      },
-    ]);
-    setLoading(true);
-
-    try {
-      const answer = await askVideoQuestion(clean, activeVideo.id);
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content: typeof answer === "string" ? answer : JSON.stringify(answer),
-          timestamp: new Date().toLocaleTimeString([], {
-            hour: "2-digit",
-            minute: "2-digit",
-          }),
-        },
-      ]);
-    } catch (err) {
-      setError(err.message || "Could not generate answer.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  function handleCopy(text, idx) {
-    navigator.clipboard?.writeText(text);
-    setCopiedIndex(idx);
-    setTimeout(() => setCopiedIndex(null), 2000);
-  }
-
-  function handleReaction(idx, type) {
-    setReactions((prev) => ({
-      ...prev,
-      [idx]: prev[idx] === type ? null : type,
+  // Append a message to the conversation belonging to a specific video.
+  function appendMessage(targetVideoId, message) {
+    setMessagesByVideo((previous) => ({
+      ...previous,
+      [targetVideoId]: [
+        ...(previous[targetVideoId] || []),
+        message,
+      ],
     }));
   }
 
-  function handleQuickSwitch(e) {
-    e.preventDefault();
-    const id = extractYouTubeId(quickUrl);
-    if (!id) return;
+  function setVideoLoading(targetVideoId, isLoading) {
+    setLoadingVideoIds((previous) => {
+      if (isLoading) {
+        return previous.includes(targetVideoId)
+          ? previous
+          : [...previous, targetVideoId];
+      }
 
+      return previous.filter((id) => id !== targetVideoId);
+    });
+  }
+
+  function setVideoError(targetVideoId, message) {
+    setErrorsByVideo((previous) => ({
+      ...previous,
+      [targetVideoId]: message,
+    }));
+  }
+
+  async function sendQuestion(text = query) {
+    const clean = text.trim();
+
+    if (!clean || loading) {
+      return;
+    }
+
+    // Capture the video ID before the request starts.
+    // If the user switches videos, this request still belongs to the
+    // original video.
+    const targetVideoId = activeVideo.id;
+
+    setVideoError(targetVideoId, "");
+    setQuery("");
+
+    appendMessage(
+      targetVideoId,
+      createMessage("user", clean)
+    );
+
+    setVideoLoading(targetVideoId, true);
+
+    try {
+      // Existing backend API:
+      // POST /generate
+      // { query, video_id }
+      const answer = await askVideoQuestion(
+        clean,
+        targetVideoId
+      );
+
+      const answerText =
+        typeof answer === "string"
+          ? answer
+          : JSON.stringify(answer);
+
+      appendMessage(
+        targetVideoId,
+        createMessage("assistant", answerText)
+      );
+    } catch (err) {
+      console.error(
+        `Failed to generate answer for video ${targetVideoId}:`,
+        err
+      );
+
+      setVideoError(
+        targetVideoId,
+        err.message || "Could not generate an answer. Please try again."
+      );
+    } finally {
+      setVideoLoading(targetVideoId, false);
+    }
+  }
+
+  async function handleCopy(text, messageId) {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedMessageId(messageId);
+
+      setTimeout(() => {
+        setCopiedMessageId((current) =>
+          current === messageId ? null : current
+        );
+      }, 2000);
+    } catch (err) {
+      console.error("Could not copy message:", err);
+      setVideoError(
+        activeVideo.id,
+        "Could not copy the message. Check browser clipboard permissions."
+      );
+    }
+  }
+
+  function handleReaction(messageId, type) {
+    setReactions((previous) => ({
+      ...previous,
+      [messageId]:
+        previous[messageId] === type ? null : type,
+    }));
+  }
+
+  function handleQuickSwitch(event) {
+    event.preventDefault();
+
+    setQuickSwitchError("");
+
+    const id = extractYouTubeId(quickUrl);
+
+    if (!id) {
+      setQuickSwitchError(
+        "Please enter a valid YouTube video URL."
+      );
+      return;
+    }
+
+    // Avoid switching to the same video unnecessarily.
+    if (id === activeVideo.id) {
+      setQuickUrl("");
+      return;
+    }
+
+    // Selecting a URL is not the same as indexing its transcript.
+    // Backend ingestion and index-status verification can be connected later.
     const newVideo = {
       id,
       title: `YouTube Video (${id})`,
-      url: quickUrl.trim(),
+      url: `https://www.youtube.com/watch?v=${id}`,
       channel: "YouTube Creator",
-      chunksCount: 22,
-      dimensions: 768,
-      indexedAt: "Just now",
+      chunksCount: null,
+      dimensions: null,
+      indexedAt: null,
     };
+
     setActiveVideo(newVideo);
     setActive(newVideo);
     setQuickUrl("");
+    setQuery("");
+  }
+
+  function handleThumbnailError(event) {
+    event.currentTarget.onerror = null;
+    event.currentTarget.src =
+      "https://images.unsplash.com/photo-1617814076367-b759c7d7e738?auto=format&fit=crop&w=300&q=80";
   }
 
   return (
     <div className="chat-workspace">
       {/* Main Chat Column */}
       <section className="chat-main-column">
-        {/* Video mini bar at top of chat */}
+        {/* Active Video Header */}
         <div className="chat-video-bar">
           <div className="chat-video-meta">
             <div className="chat-thumb-mini">
               <img
-                src={`https://img.youtube.com/vi/${activeVideo.id}/hqdefault.jpg`}
+                src={getYouTubeThumbnail(activeVideo.id)}
                 alt={activeVideo.title}
-                onError={(e) => {
-                  e.currentTarget.src =
-                    "https://images.unsplash.com/photo-1617814076367-b759c7d7e738?auto=format&fit=crop&w=300&q=80";
-                }}
+                onError={handleThumbnailError}
               />
             </div>
+
             <div className="chat-title-group">
               <h3>{activeVideo.title}</h3>
+
               <span>
                 <span className="dot-live" />
-                Active Vector Index · {activeVideo.chunksCount || 24} Chunks
-                Loaded
+                Selected Video · {activeVideo.id}
               </span>
             </div>
           </div>
 
-          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "10px",
+            }}
+          >
             <Link
               to="/videos"
               className="btn-secondary"
-              style={{ padding: "6px 12px", fontSize: "11px" }}
+              style={{
+                padding: "6px 12px",
+                fontSize: "11px",
+              }}
             >
               Switch Video 🔄
             </Link>
-            <span className="genz-sticker">100% GROUNDED 💅</span>
+
+            <span className="genz-sticker">
+              VidiQ AI ✨
+            </span>
           </div>
         </div>
 
-        {/* Messages List Area */}
-        <div className="chat-messages-container" ref={scrollRef}>
+        {/* Messages */}
+        <div
+          className="chat-messages-container"
+          ref={scrollRef}
+        >
           {messages.length === 0 ? (
             <div className="chat-welcome-box">
               <div className="welcome-avatar-glow">
                 <Flame size={24} />
               </div>
-              <span className="welcome-tag">SHERYIANS COGNITION ENGINE</span>
-              <h2>Ask Anything About This Video fr fr 🏎️</h2>
+
+              <span className="welcome-tag">
+                VIDIQ AI · VIDEO ASSISTANT
+              </span>
+
+              <h2>Ask Anything About This Video 🎬</h2>
+
               <p>
-                Zero hallucinations, no filler. All responses are 100% matched
-                against semantic vector embeddings of the actual spoken audio.
+                Ask questions about the selected YouTube video.
+                Answers are generated using the backend retrieval
+                pipeline and the available video transcript.
               </p>
 
-              {/* Suggestions Grid */}
+              {/* Suggested Questions */}
               <div className="suggestion-cards-grid">
-                {suggestions.map((item, idx) => (
+                {suggestions.map((item, index) => (
                   <button
                     key={item}
                     className="suggestion-pill-card"
                     onClick={() => sendQuestion(item)}
+                    disabled={loading}
                   >
-                    <span className="card-number">0{idx + 1}</span>
-                    <span className="card-query">{item}</span>
+                    <span className="card-number">
+                      0{index + 1}
+                    </span>
+
+                    <span className="card-query">
+                      {item}
+                    </span>
+
                     <span className="card-arrow">→</span>
                   </button>
                 ))}
               </div>
             </div>
           ) : (
-            messages.map((msg, idx) => {
-              const isAssistant = msg.role === "assistant";
+            messages.map((message) => {
+              const isAssistant =
+                message.role === "assistant";
+
+              const reaction = reactions[message.id];
+
               return (
                 <div
-                  key={idx}
-                  className={`msg-row ${isAssistant ? "assistant" : "user"}`}
+                  key={message.id}
+                  className={`msg-row ${
+                    isAssistant ? "assistant" : "user"
+                  }`}
                 >
                   <div
                     className={`msg-avatar ${
@@ -216,54 +388,81 @@ export default function ChatPage() {
 
                   <div className="msg-bubble-wrap">
                     <div className="msg-meta-header">
-                      <span>{isAssistant ? "Sheryians VidiQ AI" : "You"}</span>
+                      <span>
+                        {isAssistant
+                          ? "VidiQ AI"
+                          : "You"}
+                      </span>
+
                       {isAssistant && (
-                        <span className="source-pill">Grounded Vector Match</span>
+                        <span className="source-pill">
+                          AI Response
+                        </span>
                       )}
-                      <span>· {msg.timestamp}</span>
+
+                      <span>· {message.timestamp}</span>
                     </div>
 
-                    <div className="msg-bubble">{msg.content}</div>
+                    <div className="msg-bubble">
+                      {message.content}
+                    </div>
 
                     {isAssistant && (
                       <div className="msg-actions">
                         <button
                           className="action-icon-btn"
                           title="Copy to clipboard"
-                          onClick={() => handleCopy(msg.content, idx)}
+                          onClick={() =>
+                            handleCopy(
+                              message.content,
+                              message.id
+                            )
+                          }
                         >
-                          {copiedIndex === idx ? (
+                          {copiedMessageId === message.id ? (
                             <CheckCheck
                               size={14}
-                              style={{ color: "var(--emerald-green)" }}
+                              style={{
+                                color: "var(--emerald-green)",
+                              }}
                             />
                           ) : (
                             <Copy size={14} />
                           )}
                         </button>
+
                         <button
                           className="action-icon-btn"
                           title="Accurate response"
+                          aria-label="Mark response as accurate"
+                          aria-pressed={reaction === "up"}
                           style={{
                             color:
-                              reactions[idx] === "up"
+                              reaction === "up"
                                 ? "var(--primary-orange)"
                                 : "",
                           }}
-                          onClick={() => handleReaction(idx, "up")}
+                          onClick={() =>
+                            handleReaction(message.id, "up")
+                          }
                         >
                           <ThumbsUp size={14} />
                         </button>
+
                         <button
                           className="action-icon-btn"
-                          title="Inaccurate"
+                          title="Inaccurate response"
+                          aria-label="Mark response as inaccurate"
+                          aria-pressed={reaction === "down"}
                           style={{
                             color:
-                              reactions[idx] === "down"
+                              reaction === "down"
                                 ? "var(--primary-orange)"
                                 : "",
                           }}
-                          onClick={() => handleReaction(idx, "down")}
+                          onClick={() =>
+                            handleReaction(message.id, "down")
+                          }
                         >
                           <ThumbsDown size={14} />
                         </button>
@@ -275,14 +474,18 @@ export default function ChatPage() {
             })
           )}
 
-          {/* Typing Indicator */}
+          {/* Loading Indicator */}
           {loading && (
             <div className="msg-row assistant">
-              <div className="msg-avatar assistant">⚡</div>
+              <div className="msg-avatar assistant">
+                ⚡
+              </div>
+
               <div className="typing-box">
                 <span className="typing-dot" />
                 <span className="typing-dot" />
                 <span className="typing-dot" />
+
                 <span
                   style={{
                     fontSize: "12px",
@@ -290,28 +493,41 @@ export default function ChatPage() {
                     marginLeft: "6px",
                   }}
                 >
-                  Searching vector chunks & cooking response…
+                  Retrieving video context and generating an answer…
                 </span>
               </div>
             </div>
           )}
 
-          {error && <div className="chat-error-banner">⚠️ {error}</div>}
+          {/* Backend Errors */}
+          {error && (
+            <div
+              className="chat-error-banner"
+              role="alert"
+            >
+              ⚠️ {error}
+            </div>
+          )}
         </div>
 
-        {/* Input Composer */}
+        {/* Message Composer */}
         <div className="chat-composer-section">
           <div className="composer-glass-box">
             <textarea
               value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
+              onChange={(event) =>
+                setQuery(event.target.value)
+              }
+              onKeyDown={(event) => {
+                if (
+                  event.key === "Enter" &&
+                  !event.shiftKey
+                ) {
+                  event.preventDefault();
                   sendQuestion();
                 }
               }}
-              placeholder="Ask anything about the video (no cap, we have the receipts)…"
+              placeholder="Ask anything about the selected video..."
               rows={1}
               disabled={loading}
             />
@@ -319,8 +535,10 @@ export default function ChatPage() {
             <div className="composer-actions-bar">
               <div className="composer-hints-left">
                 <span className="grounded-tag">
-                  <Check size={13} /> 100% Grounded RAG · Zero Fluff
+                  <Check size={13} />
+                  Transcript-based RAG
                 </span>
+
                 <span>Enter ↵ to send</span>
               </div>
 
@@ -328,15 +546,17 @@ export default function ChatPage() {
                 className="send-action-btn"
                 onClick={() => sendQuestion()}
                 disabled={!query.trim() || loading}
-                aria-label="Send query"
+                aria-label="Send question"
               >
                 <Send size={16} />
               </button>
             </div>
           </div>
+
           <p className="composer-caption">
-            Sheryians VidiQ AI responds strictly with facts from the transcript.
-            Zero hallucinations, periodt. 💅
+            VidiQ AI uses the backend retrieval pipeline to answer
+            questions about the selected video. Accuracy depends
+            on the transcript and retrieved context.
           </p>
         </div>
       </section>
@@ -345,44 +565,57 @@ export default function ChatPage() {
       <aside className="context-panel">
         <div className="context-header-title">
           <h4>Video Source</h4>
-          <span className="genz-sticker" style={{ transform: "none" }}>
-            RECEIPTS 🧾
+
+          <span
+            className="genz-sticker"
+            style={{ transform: "none" }}
+          >
+            SOURCE 🧾
           </span>
         </div>
 
+        {/* Video Preview */}
         <div className="context-video-card">
           <img
-            src={`https://img.youtube.com/vi/${activeVideo.id}/hqdefault.jpg`}
-            alt="Source Video Preview"
-            onError={(e) => {
-              e.currentTarget.src =
-                "https://images.unsplash.com/photo-1617814076367-b759c7d7e738?auto=format&fit=crop&w=300&q=80";
-            }}
+            src={getYouTubeThumbnail(activeVideo.id)}
+            alt={`Thumbnail for ${activeVideo.title}`}
+            onError={handleThumbnailError}
           />
+
           <div className="context-video-details">
             <h5>{activeVideo.title}</h5>
+
             <a
-              href={
-                activeVideo.url ||
-                `https://www.youtube.com/watch?v=${activeVideo.id}`
-              }
+              href={getYouTubeUrl(activeVideo)}
               target="_blank"
               rel="noreferrer"
             >
-              Watch Original Video <ExternalLink size={12} />
+              Watch Original Video{" "}
+              <ExternalLink size={12} />
             </a>
           </div>
         </div>
 
-        {/* Quick URL Switch in Sidebar */}
-        <form onSubmit={handleQuickSwitch} style={{ display: "flex", gap: "6px" }}>
+        {/* Quick Video Switch */}
+        <form
+          onSubmit={handleQuickSwitch}
+          style={{
+            display: "flex",
+            gap: "6px",
+          }}
+        >
           <input
             type="text"
             value={quickUrl}
-            onChange={(e) => setQuickUrl(e.target.value)}
-            placeholder="Paste another YouTube URL..."
+            onChange={(event) => {
+              setQuickUrl(event.target.value);
+              setQuickSwitchError("");
+            }}
+            placeholder="Paste YouTube URL..."
+            aria-label="YouTube video URL"
             style={{
               flex: 1,
+              minWidth: 0,
               background: "rgba(255,255,255,0.05)",
               border: "1px solid var(--glass-border)",
               borderRadius: "8px",
@@ -391,16 +624,47 @@ export default function ChatPage() {
               color: "#fff",
             }}
           />
+
           <button
             type="submit"
             className="btn-primary"
-            style={{ padding: "6px 10px", fontSize: "11px" }}
+            style={{
+              padding: "6px 10px",
+              fontSize: "11px",
+            }}
             disabled={!quickUrl.trim()}
           >
             Switch
           </button>
         </form>
 
+        {quickSwitchError && (
+          <p
+            role="alert"
+            style={{
+              fontSize: "11px",
+              color: "var(--primary-orange)",
+              marginTop: "8px",
+            }}
+          >
+            {quickSwitchError}
+          </p>
+        )}
+
+        <p
+          style={{
+            fontSize: "11px",
+            color: "var(--text-muted)",
+            lineHeight: 1.5,
+            marginTop: "8px",
+          }}
+        >
+          Switching selects a video. The video must also be
+          indexed in the backend before its transcript can be
+          retrieved.
+        </p>
+
+        {/* Pipeline Information */}
         <div className="context-header-title">
           <h4>Vector Pipeline 🧠</h4>
         </div>
@@ -408,42 +672,63 @@ export default function ChatPage() {
         <div className="pipeline-status-card">
           <div className="pipeline-step">
             <span className="step-check-dot">✓</span>
+
             <div className="step-text">
-              <strong>Spoken Audio Tokenized 🎧</strong>
-              <span>Zero words lost in translation</span>
+              <strong>Transcript Retrieval</strong>
+              <span>
+                Uses the selected video ID for retrieval
+              </span>
             </div>
           </div>
+
           <div className="pipeline-step">
             <span className="step-check-dot">✓</span>
+
             <div className="step-text">
-              <strong>Embeddings Indexed 🧠</strong>
-              <span>768-dim vector hyperspace</span>
+              <strong>Vector Search</strong>
+              <span>
+                Retrieves relevant transcript chunks
+              </span>
             </div>
           </div>
+
           <div className="pipeline-step">
             <span className="step-check-dot">✓</span>
+
             <div className="step-text">
-              <strong>Speed Check ⚡</strong>
-              <span>Sub-50ms query match</span>
+              <strong>LLM Response</strong>
+              <span>
+                Generates an answer using retrieved context
+              </span>
             </div>
           </div>
         </div>
 
+        {/* Quick Prompts */}
         <div className="context-header-title">
           <h4>Quick Prompts 💬</h4>
         </div>
 
-        <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-          {suggestions.map((s) => (
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: "8px",
+          }}
+        >
+          {suggestions.map((suggestion) => (
             <button
-              key={s}
+              key={suggestion}
               className="suggestion-pill-card"
               style={{ padding: "10px 12px" }}
-              onClick={() => sendQuestion(s)}
+              onClick={() => sendQuestion(suggestion)}
               disabled={loading}
             >
-              <span className="card-query" style={{ fontSize: "11px" }}>
-                {s}
+              <span
+                className="card-query"
+                style={{ fontSize: "11px" }}
+              >
+                {suggestion}
               </span>
             </button>
           ))}

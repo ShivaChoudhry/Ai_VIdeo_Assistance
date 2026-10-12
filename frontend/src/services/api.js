@@ -29,30 +29,53 @@ function getClientRAGResponse(query, videoId) {
   return `🧠 **Grounded Vector Search Response:**\n\nFrom the transcript of **"${activeVideo.title || videoId}"** (chunks matched via cosine similarity):\n\nRegarding your question: *"${query}"*:\n- The transcript confirms relevant discussion around this topic in the video timeline.\n- All facts are strictly grounded in audio speech chunks without hallucinations.\n\n✨ *(Running in Pure Frontend RAG Mode)*`;
 }
 
-export async function askVideoQuestion(query, videoId = DEFAULT_VIDEO_ID) {
-  // Try connecting to backend if reachable; fallback gracefully to instant client-side RAG response
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 1200);
+export async function askVideoQuestion(
+  query,
+  videoId = DEFAULT_VIDEO_ID
+) {
+  const controller = new AbortController();
 
+  const timeoutId = setTimeout(() => {
+    controller.abort();
+  }, 30000);
+
+  try {
     const response = await fetch(`${API_BASE_URL}/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query, video_id: videoId }),
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        query,
+        video_id: videoId,
+      }),
       signal: controller.signal,
     });
 
-    clearTimeout(timeoutId);
-
     const data = await response.json().catch(() => ({}));
-    if (response.ok && data.success && data.answer) {
-      return data.answer;
-    }
-  } catch (err) {
-    // Backend offline / not reachable -> serve client RAG response
-  }
 
-  // Artificial short delay (350ms) to simulate real inference feeling
-  await new Promise((res) => setTimeout(res, 350));
-  return getClientRAGResponse(query, videoId);
+    if (!response.ok) {
+      throw new Error(
+        data.error || `Backend request failed: ${response.status}`
+      );
+    }
+
+    if (!data.success || !data.answer) {
+      throw new Error(
+        data.error || "Backend did not return a valid answer."
+      );
+    }
+
+    return data.answer;
+  } catch (error) {
+    if (error.name === "AbortError") {
+      throw new Error(
+        "Backend response timed out. Please try again."
+      );
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
