@@ -2751,3 +2751,108 @@ body,
   background: rgba(255, 105, 50, 0.45);
   border-radius: 10px;
 }
+
+/* Fix dashboard page scrolling */
+html,
+body,
+#root {
+  min-height: 100%;
+  height: auto;
+}
+
+body {
+  margin: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+#root {
+  width: 100%;
+}
+
+.app-layout,
+.main-content,
+.page-content {
+  min-height: 0;
+}
+
+/* Allow dashboard content to scroll */
+.dashboard-page {
+  height: auto;
+  min-height: 100%;
+  overflow: visible;
+}
+
+/* Dashboard scrolling fix */
+html,
+body,
+#root {
+  min-height: 100%;
+  height: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+body {
+  margin: 0;
+}
+
+#root {
+  width: 100%;
+  min-width: 0;
+}
+
+/* Dashboard must grow with its content */
+.app-shell:not(:has(.chat-workspace)) {
+  height: auto;
+  min-height: 100vh;
+  min-height: 100dvh;
+  overflow: visible;
+  align-items: stretch;
+}
+
+.app-shell:not(:has(.chat-workspace)) .main-shell {
+  height: auto;
+  min-height: 100vh;
+  min-height: 100dvh;
+  overflow: visible;
+}
+
+.app-shell:not(:has(.chat-workspace)) .page-content {
+  flex: 1 0 auto;
+  min-height: 0;
+  overflow: visible;
+}
+
+/* Keep chat layout independently scrollable */
+.app-shell:has(.chat-workspace) {
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+.app-shell:has(.chat-workspace) .main-shell {
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.app-shell:has(.chat-workspace) .chat-workspace {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.app-shell:has(.chat-workspace) .chat-messages-container {
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+@media (max-width: 820px) {
+  .app-shell:not(:has(.chat-workspace)) .main-shell {
+    width: 100%;
+    max-width: 100%;
+    margin-left: 0;
+  }
+}
