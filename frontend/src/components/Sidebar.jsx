@@ -70,7 +70,7 @@ export default function Sidebar() {
         <div className="profile-card">
           <div className="profile-avatar">S</div>
           <div className="profile-meta">
-            <strong>Sheryians Pro Dev</strong>
+            <strong>Shiva Choudhry</strong>
             <span>Single-Video RAG Mode</span>
           </div>
           <Cpu size={16} style={{ color: 'var(--text-dark)' }} />

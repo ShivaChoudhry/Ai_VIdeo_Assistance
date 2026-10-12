@@ -10,7 +10,7 @@ export default function Layout({ children, title = 'Workspace' }) {
         <header className="topbar">
           <div className="topbar-left">
             <div className="breadcrumb-path">
-              <span>Sheryians RAG</span>
+              <span>Intelligent RAG</span>
               <span className="crumb-sep">/</span>
               <span className="breadcrumb-active">{title}</span>
             </div>
@@ -42,7 +42,7 @@ export default function Layout({ children, title = 'Workspace' }) {
 
         <footer className="footer-bar">
           <div>
-            <span>VidiQ AI · Powered by <strong className="sheryians-credit">Sheryians Coding School</strong> design ethos</span>
+            <span>VidiQ AI · Powered by <strong className="sheryians-credit">Shiva Choudhry</strong> design ethos</span>
           </div>
           <div>
             <span>Grounded Answers · Zero Hallucinations · Next-Gen Vector Search</span>

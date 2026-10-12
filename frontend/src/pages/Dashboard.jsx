@@ -200,7 +200,7 @@ export default function Dashboard() {
         <div>
           <div className="section-tag">THE PIPELINE THAT COOKS</div>
           <h2 className="section-title">
-            How Sheryians RAG Works Behind The Scenes 🍳
+            How RAG Works Behind The Scenes 🍳
           </h2>
         </div>
       </div>

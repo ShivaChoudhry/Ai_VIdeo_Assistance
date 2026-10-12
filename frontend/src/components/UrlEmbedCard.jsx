@@ -19,17 +19,7 @@ const DEMO_PRESETS = [
     title: 'Porsche Vlog 🏎️',
     url: 'https://www.youtube.com/watch?v=9wXcjnJ2TN8',
     channel: 'Sourav Joshi Vlogs',
-  },
-  {
-    title: 'Sheryians Web Dev 💻',
-    url: 'https://www.youtube.com/watch?v=tVzUXW6siu0',
-    channel: 'Sheryians Coding School',
-  },
-  {
-    title: 'Lofi Study Beats 🎵',
-    url: 'https://www.youtube.com/watch?v=jfKfPfyJRdk',
-    channel: 'Lofi Girl',
-  },
+  }
 ];
 
 export default function UrlEmbedCard({ onEmbedSuccess }) {
