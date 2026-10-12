@@ -2738,7 +2738,7 @@ body,
   box-sizing: border-box;
 }
 
-/* Rounded scrollbar for Chrome */
+
 .chat-workspace .context-panel::-webkit-scrollbar {
   width: 5px;
 }
