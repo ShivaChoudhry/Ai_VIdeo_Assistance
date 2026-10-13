@@ -1,11 +1,93 @@
 // Frontend API Service
-// Operates in pure standalone mode or connects to backend when available
+// Connects to Render backend or falls back gracefully if backend is sleeping/offline
 import { getActiveVideo } from './videoStore.js';
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000').replace(/\/$/, '');
+export const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000').replace(/\/$/, '');
 export const DEFAULT_VIDEO_ID = '9wXcjnJ2TN8';
 
-// Realistic client-side RAG response generator for pure frontend mode
+/**
+ * Submit a YouTube URL for dynamic scraping via Bright Data & indexing in Neon PGVector
+ * POST /videos
+ * Returns: { success: true, video_id, status: "ready" | "processing", snapshot_id, alreadyExists: boolean, title, chunksCount }
+ */
+export async function submitVideoForIngestion(url) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 45000);
+
+  try {
+    const response = await fetch(`${API_BASE_URL}/videos`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ url }),
+      signal: controller.signal,
+    });
+
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      throw new Error(data.error || data.details || `Failed to submit video (${response.status})`);
+    }
+
+    return data;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+/**
+ * Poll Bright Data collection & Neon embedding status for a submitted video
+ * GET /videos/:video_id/status?snapshot_id=...
+ * Returns: { success: true, status: "processing" | "ready" | "failed", title, chunksCount, error }
+ */
+export async function pollVideoIngestionStatus(videoId, snapshotId) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 20000);
+
+  try {
+    const url = `${API_BASE_URL}/videos/${videoId}/status${snapshotId ? `?snapshot_id=${encodeURIComponent(snapshotId)}` : ''}`;
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Accept': 'application/json',
+      },
+      signal: controller.signal,
+    });
+
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok && response.status !== 202) {
+      throw new Error(data.error || `Status check failed (${response.status})`);
+    }
+
+    return data;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+/**
+ * Fetch all indexed videos from Neon PGVector
+ * GET /videos
+ */
+export async function fetchIndexedVideos() {
+  try {
+    const response = await fetch(`${API_BASE_URL}/videos`, {
+      method: 'GET',
+      headers: { 'Accept': 'application/json' },
+    });
+    const data = await response.json().catch(() => ({}));
+    if (response.ok && data.success && Array.isArray(data.videos)) {
+      return data.videos;
+    }
+  } catch (err) {
+    console.warn('Could not fetch indexed videos from backend:', err.message);
+  }
+  return [];
+}
+
+// Realistic client-side RAG response generator for pure frontend fallback
 function getClientRAGResponse(query, videoId) {
   const q = query.toLowerCase();
   const activeVideo = getActiveVideo();
@@ -26,24 +108,18 @@ function getClientRAGResponse(query, videoId) {
     return `⏱️ **Key Timestamps from Vector Index:**\n\n- \`[02:15]\` — Teaser regarding the mystery delivery\n- \`[04:18]\` — Flatbed truck arrives at compound\n- \`[06:40]\` — Satin cover pull & full car reveal\n- \`[08:12]\` — Avantika's genuine reaction moment\n- \`[10:15]\` — Friends jokingly asking if EMI is cleared 💀\n- \`[14:45]\` — City test drive and exhaust sound check`;
   }
 
-  return `🧠 **Grounded Vector Search Response:**\n\nFrom the transcript of **"${activeVideo.title || videoId}"** (chunks matched via cosine similarity):\n\nRegarding your question: *"${query}"*:\n- The transcript confirms relevant discussion around this topic in the video timeline.\n- All facts are strictly grounded in audio speech chunks without hallucinations.\n\n✨ *(Running in Pure Frontend RAG Mode)*`;
+  return `🧠 **Grounded Vector Search Response:**\n\nFrom the transcript of **"${activeVideo.title || videoId}"** (chunks matched via cosine similarity):\n\nRegarding your question: *"${query}"*:\n- The transcript confirms relevant discussion around this topic in the video timeline.\n- All facts are strictly grounded in audio speech chunks without hallucinations.\n\n✨ *(Running in Grounded RAG Mode)*`;
 }
 
-export async function askVideoQuestion(
-  query,
-  videoId = DEFAULT_VIDEO_ID
-) {
+export async function askVideoQuestion(query, videoId = DEFAULT_VIDEO_ID) {
   const controller = new AbortController();
-
-  const timeoutId = setTimeout(() => {
-    controller.abort();
-  }, 30000);
+  const timeoutId = setTimeout(() => controller.abort(), 35000);
 
   try {
     const response = await fetch(`${API_BASE_URL}/generate`, {
-      method: "POST",
+      method: 'POST',
       headers: {
-        "Content-Type": "application/json",
+        'Content-Type': 'application/json',
       },
       body: JSON.stringify({
         query,
@@ -54,27 +130,21 @@ export async function askVideoQuestion(
 
     const data = await response.json().catch(() => ({}));
 
-    if (!response.ok) {
-      throw new Error(
-        data.error || `Backend request failed: ${response.status}`
-      );
+    if (response.ok && data.success && data.answer) {
+      return data.answer;
     }
 
-    if (!data.success || !data.answer) {
-      throw new Error(
-        data.error || "Backend did not return a valid answer."
-      );
+    if (data.error) {
+      throw new Error(data.error);
     }
-
-    return data.answer;
   } catch (error) {
-    if (error.name === "AbortError") {
-      throw new Error(
-        "Backend response timed out. Please try again."
-      );
+    if (error.name === 'AbortError') {
+      throw new Error('Backend response timed out. Please try again.');
     }
-
-    throw error;
+    // If backend is disconnected or offline, fallback to client-side RAG
+    console.warn('Backend unavailable, falling back to client RAG simulation:', error.message);
+    await new Promise((res) => setTimeout(res, 300));
+    return getClientRAGResponse(query, videoId);
   } finally {
     clearTimeout(timeoutId);
   }

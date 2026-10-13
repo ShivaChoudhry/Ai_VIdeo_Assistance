@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Youtube,
@@ -13,13 +13,24 @@ import {
   Flame,
 } from 'lucide-react';
 import { extractYouTubeId, setActiveVideo } from '../services/videoStore.js';
+import { submitVideoForIngestion, pollVideoIngestionStatus } from '../services/api.js';
 
 const DEMO_PRESETS = [
   {
     title: 'Porsche Vlog 🏎️',
     url: 'https://www.youtube.com/watch?v=9wXcjnJ2TN8',
     channel: 'Sourav Joshi Vlogs',
-  }
+  },
+  {
+    title: 'Sheryians Web Dev 💻',
+    url: 'https://www.youtube.com/watch?v=tVzUXW6siu0',
+    channel: 'Sheryians Coding School',
+  },
+  {
+    title: 'Lofi Study Beats 🎵',
+    url: 'https://www.youtube.com/watch?v=jfKfPfyJRdk',
+    channel: 'Lofi Girl',
+  },
 ];
 
 export default function UrlEmbedCard({ onEmbedSuccess }) {
@@ -27,12 +38,20 @@ export default function UrlEmbedCard({ onEmbedSuccess }) {
   const [isProcessing, setIsProcessing] = useState(false);
   const [currentStep, setCurrentStep] = useState(0);
   const [progress, setProgress] = useState(0);
+  const [statusText, setStatusText] = useState('');
   const [error, setError] = useState('');
   const [completedVideo, setCompletedVideo] = useState(null);
+  const pollingRef = useRef(null);
   const navigate = useNavigate();
 
+  useEffect(() => {
+    return () => {
+      if (pollingRef.current) clearInterval(pollingRef.current);
+    };
+  }, []);
+
   const STEPS = [
-    { label: 'Fetching YouTube transcript & audio streams', icon: Youtube },
+    { label: 'Scraping video transcript via Bright Data API', icon: Youtube },
     { label: 'Splitting into 500-token semantic chunks', icon: Layers },
     { label: 'Computing 768-dimensional Gemini vector embeddings', icon: Sparkles },
     { label: 'Storing vectors in Neon pgvector database table', icon: Database },
@@ -46,11 +65,11 @@ export default function UrlEmbedCard({ onEmbedSuccess }) {
         setError('');
       }
     } catch (err) {
-      // Clipboard access blocked, user can paste normally
+      // Clipboard access blocked
     }
   }
 
-  function handleEmbed(targetUrl = url) {
+  async function handleEmbed(targetUrl = url) {
     const cleanUrl = targetUrl.trim();
     if (!cleanUrl) {
       setError('Please paste a YouTube URL first!');
@@ -63,57 +82,110 @@ export default function UrlEmbedCard({ onEmbedSuccess }) {
       return;
     }
 
+    if (pollingRef.current) clearInterval(pollingRef.current);
+
     setError('');
     setIsProcessing(true);
     setCurrentStep(0);
     setProgress(15);
+    setStatusText('Checking database and submitting to Bright Data...');
     setCompletedVideo(null);
 
-    // Realistic step-by-step progress simulation (100% frontend standalone)
-    setTimeout(() => {
-      setCurrentStep(1);
-      setProgress(40);
-    }, 450);
+    try {
+      const initial = await submitVideoForIngestion(cleanUrl);
 
-    setTimeout(() => {
-      setCurrentStep(2);
-      setProgress(75);
-    }, 950);
+      // Case 1: Video is ALREADY in Neon PGVector
+      if (initial.status === 'ready' || initial.alreadyExists) {
+        setProgress(100);
+        setCurrentStep(3);
+        setIsProcessing(false);
 
-    setTimeout(() => {
-      setCurrentStep(3);
-      setProgress(95);
-    }, 1450);
+        const videoRecord = {
+          id: videoId,
+          title: initial.title || `YouTube Video (${videoId})`,
+          url: cleanUrl,
+          channel: 'YouTube Creator',
+          chunksCount: initial.chunksCount || 24,
+          dimensions: 768,
+          indexedAt: 'Already in Database',
+        };
 
-    setTimeout(() => {
-      setProgress(100);
+        setActiveVideo(videoRecord);
+        setCompletedVideo(videoRecord);
+        if (onEmbedSuccess) onEmbedSuccess(videoRecord);
+        return;
+      }
+
+      // Case 2: Ingestion triggered via Bright Data (Asynchronous)
+      const snapshotId = initial.snapshot_id;
+      setProgress(35);
+      setCurrentStep(0);
+      setStatusText('Bright Data is collecting video transcript and metadata...');
+
+      let attempts = 0;
+      const maxAttempts = 40; // ~2 minutes polling
+
+      pollingRef.current = setInterval(async () => {
+        attempts += 1;
+
+        // Progressively advance visual indicators
+        if (attempts <= 5) {
+          setProgress(Math.min(45, 25 + attempts * 4));
+          setCurrentStep(0);
+          setStatusText('Bright Data is scraping audio subtitles & metadata...');
+        } else if (attempts <= 12) {
+          setProgress(Math.min(70, 45 + (attempts - 5) * 3));
+          setCurrentStep(1);
+          setStatusText('Parsing transcript into semantic chunks...');
+        } else {
+          setProgress(Math.min(92, 70 + (attempts - 12) * 2));
+          setCurrentStep(2);
+          setStatusText('Generating Gemini 768-dim embeddings & storing in Neon...');
+        }
+
+        try {
+          const statusRes = await pollVideoIngestionStatus(videoId, snapshotId);
+
+          if (statusRes.status === 'ready') {
+            clearInterval(pollingRef.current);
+            pollingRef.current = null;
+            setProgress(100);
+            setCurrentStep(3);
+            setIsProcessing(false);
+
+            const videoRecord = {
+              id: videoId,
+              title: statusRes.title || `YouTube Video (${videoId})`,
+              url: cleanUrl,
+              channel: 'YouTube Creator',
+              chunksCount: statusRes.chunksCount || 24,
+              dimensions: 768,
+              indexedAt: 'Just now',
+            };
+
+            setActiveVideo(videoRecord);
+            setCompletedVideo(videoRecord);
+            if (onEmbedSuccess) onEmbedSuccess(videoRecord);
+          } else if (statusRes.status === 'failed') {
+            clearInterval(pollingRef.current);
+            pollingRef.current = null;
+            setIsProcessing(false);
+            setError(statusRes.error || 'Video collection or indexing failed in Bright Data.');
+          } else if (attempts >= maxAttempts) {
+            clearInterval(pollingRef.current);
+            pollingRef.current = null;
+            setIsProcessing(false);
+            setError('Ingestion took longer than expected. Please check again in a few moments.');
+          }
+        } catch (pollErr) {
+          console.warn('Status poll warning:', pollErr.message);
+        }
+      }, 3500);
+    } catch (err) {
       setIsProcessing(false);
-
-      // Derive title or fallback
-      let title = `YouTube Video (${videoId})`;
-      const preset = DEMO_PRESETS.find((p) => p.url.includes(videoId));
-      if (preset) {
-        title = preset.title;
-      } else if (cleanUrl.includes('9wXcjnJ2TN8')) {
-        title = '1 Or New Car Aagyi 😍 Porsche';
-      }
-
-      const newVideo = {
-        id: videoId,
-        title,
-        url: cleanUrl,
-        channel: preset ? preset.channel : 'YouTube Creator',
-        chunksCount: Math.floor(Math.random() * 18) + 16,
-        dimensions: 768,
-        indexedAt: 'Just now',
-      };
-
-      setActiveVideo(newVideo);
-      setCompletedVideo(newVideo);
-      if (onEmbedSuccess) {
-        onEmbedSuccess(newVideo);
-      }
-    }, 1900);
+      console.error('Submission error:', err);
+      setError(err.message || 'Could not connect to the backend server. Please verify your connection.');
+    }
   }
 
   function handleStartChat() {
@@ -126,16 +198,16 @@ export default function UrlEmbedCard({ onEmbedSuccess }) {
         <div className="url-header-left">
           <div className="url-badge-pill">
             <Flame size={14} />
-            <span>INSTANT VECTOR INDEXER</span>
+            <span>DYNAMIC BRIGHT DATA × NEON PGVECTOR</span>
           </div>
-          <h3>Paste Any YouTube URL & Generate Embeddings ⚡</h3>
+          <h3>Paste Any YouTube URL & Index Vectors ⚡</h3>
           <p>
-            Paste any YouTube video link below. The client will parse the video, simulate transcript extraction,
-            and create 768-dim vector embeddings ready for instant RAG search!
+            Paste any YouTube video link. Bright Data scrapes the video subtitles, Gemini generates 768-dim
+            vector embeddings, and Neon stores them for instant RAG answers!
           </p>
         </div>
         <div className="genz-sticker" style={{ transform: 'rotate(2deg)' }}>
-          NO WAIT TIME FR FR 🚀
+          AUTOMATIC PIPELINE 🚀
         </div>
       </div>
 
@@ -175,7 +247,7 @@ export default function UrlEmbedCard({ onEmbedSuccess }) {
         >
           {isProcessing ? (
             <>
-              <Loader2 size={16} className="spin-icon" /> Indexing Video…
+              <Loader2 size={16} className="spin-icon" /> Scraping & Indexing…
             </>
           ) : (
             <>
@@ -190,7 +262,7 @@ export default function UrlEmbedCard({ onEmbedSuccess }) {
 
       {/* Quick Presets */}
       <div className="url-presets-row">
-        <span className="presets-label">QUICK TEST SAMPLES:</span>
+        <span className="presets-label">SAMPLE QUICK TESTS:</span>
         {DEMO_PRESETS.map((preset) => (
           <button
             key={preset.url}
@@ -213,7 +285,7 @@ export default function UrlEmbedCard({ onEmbedSuccess }) {
         <div className="embedding-progress-card">
           <div className="progress-top-row">
             <span className="progress-title">
-              <Loader2 size={15} className="spin-icon" /> Generating Vector Embeddings...
+              <Loader2 size={15} className="spin-icon" /> {statusText || 'Processing Video Pipeline...'}
             </span>
             <span className="progress-percent">{progress}%</span>
           </div>
@@ -248,7 +320,7 @@ export default function UrlEmbedCard({ onEmbedSuccess }) {
         <div className="embedding-success-card">
           <div className="success-banner-top">
             <CheckCircle2 size={18} style={{ color: 'var(--emerald-green)' }} />
-            <strong>BIG W! Vector Embeddings Generated Successfully 🏆</strong>
+            <strong>BIG W! Video Indexed In Neon PGVector Successfully 🏆</strong>
             <span className="genz-badge-w">READY TO CHAT</span>
           </div>
 
@@ -270,7 +342,7 @@ export default function UrlEmbedCard({ onEmbedSuccess }) {
               <h4>{completedVideo.title}</h4>
               <p>
                 Parsed into <strong>{completedVideo.chunksCount} semantic chunks</strong> · 768-dimension
-                Gemini vector embeddings cached · Ready for zero-latency RAG questions.
+                Gemini vector embeddings stored in Neon pgvector · Ready for conversational RAG queries.
               </p>
               <div className="preview-actions">
                 <button

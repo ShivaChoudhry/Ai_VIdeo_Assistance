@@ -21,9 +21,65 @@ const embeddings = new GoogleGenerativeAIEmbeddings({
 // 2. DATABASE CONNECTION
 // ============================================
 
-const pool = new Pool({
+export const pool = new Pool({
   connectionString: process.env.DB_URL,
 });
+
+export const isVideoIndexed = async (videoId) => {
+  try {
+    const result = await pool.query(
+      `
+      SELECT EXISTS (
+          SELECT 1
+          FROM transcripts
+          WHERE metadata->>'video_id' = $1
+      ) AS video_exists;
+      `,
+      [videoId]
+    );
+    return result.rows[0]?.video_exists || false;
+  } catch (error) {
+    console.error("Error checking video in DB:", error.message);
+    return false;
+  }
+};
+
+export const getVideoDetailsFromDB = async (videoId) => {
+  try {
+    const result = await pool.query(
+      `
+      SELECT metadata->>'title' as title, count(*) as chunks_count
+      FROM transcripts
+      WHERE metadata->>'video_id' = $1
+      GROUP BY metadata->>'title';
+      `,
+      [videoId]
+    );
+    return result.rows[0] || null;
+  } catch (error) {
+    console.error("Error getting video details from DB:", error.message);
+    return null;
+  }
+};
+
+export const getAllIndexedVideos = async () => {
+  try {
+    const result = await pool.query(
+      `
+      SELECT DISTINCT metadata->>'video_id' as video_id,
+             metadata->>'title' as title,
+             count(*) as chunks_count
+      FROM transcripts
+      GROUP BY metadata->>'video_id', metadata->>'title'
+      ORDER BY chunks_count DESC;
+      `
+    );
+    return result.rows || [];
+  } catch (error) {
+    console.error("Error getting all indexed videos:", error.message);
+    return [];
+  }
+};
 
 // ============================================
 // 3. INITIALIZE PGVECTOR STORE
@@ -54,18 +110,7 @@ export const addYTVideoToVectoreStore = async (videoData, video_id) => {
   console.log(`\nChecking video: ${video_id}`);
 
   // Check whether this video already exists.
-  const result = await pool.query(
-    `
-        SELECT EXISTS (
-            SELECT 1
-            FROM transcripts
-            WHERE metadata->>'video_id' = $1
-        ) AS video_exists;
-        `,
-    [video_id],
-  );
-
-  const videoExists = result.rows[0].video_exists;
+  const videoExists = await isVideoIndexed(video_id);
 
   if (videoExists) {
     console.log(`Video ${video_id} already exists. Skipping indexing.`);
